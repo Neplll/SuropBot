@@ -8,7 +8,25 @@ API_TOKEN = '7138896417:AAFuVZBYn-LLxsJJmxjBCw47sng8OFw4ZFA'
 bot = telebot.TeleBot(API_TOKEN)
 
 # Хранение chat_id для уведомлений
-user_chat_id = None
+user_chat_id = {}
+
+# Предопределенные сроки хранения для сиропов
+expiration_periods = {
+    "Сахар": 16,
+    "Карамель": 16,
+    "Соленая карамель": 14,
+    "Апельсин": 16,
+    "Ваниль": 14,
+    "Домашний лимонад": 10,
+    "Тоник": 16,
+    "Фреш(паст)": 7,
+    "КБ": 45,
+    "Топинамбур": 30,
+    "Смородина": 16,
+    "Ежевика": 16,
+    "Кориандр": 8,
+    "Тыква": 7,
+}
 
 
 # Инициализация базы данных
@@ -123,7 +141,7 @@ def create_relabel_buttons(syrups):
     keyboard = types.InlineKeyboardMarkup()
     for syrup in syrups:
         syrup_id, name, production_date, _ = syrup
-        keyboard.add(types.InlineKeyboardButton(text=f"Перемаркировать {name}, {production_date}", callback_data=f"relabel_{syrup_id}"))
+        keyboard.add(types.InlineKeyboardButton(text=f"{name}, {production_date}", callback_data=f"relabel_{syrup_id}"))
     keyboard.add(types.InlineKeyboardButton(text="Назад", callback_data="back"))
     return keyboard
 
@@ -185,19 +203,30 @@ def request_relabel_syrup(message):
 @bot.message_handler(func=lambda message: True)
 def handle_add_syrup_input(message):
     try:
+        # Убедитесь, что данные разделены правильно
         data = message.text.strip().split(", ")
-        if len(data) != 3:
-            bot.reply_to(message, "Неправильный формат. Введите данные в формате: Название, дд.мм.гггг, срок хранения (в днях).")
+        if len(data) != 2:
+            bot.reply_to(message, "Неправильный формат. Введите данные сиропа в формате: Название, дд.мм.гггг.")
             return
 
-        name = data[0]
-        production_date = datetime.strptime(data[1], '%d.%m.%Y').strftime('%Y-%m-%d')
-        expiration_days = int(data[2])
+        name = data[0].strip()  # Убираем лишние пробелы
+        production_date_str = data[1].strip()  # Убираем лишние пробелы
 
-        add_syrup(name, production_date, expiration_days)
-        bot.reply_to(message, f"Сироп '{name}' добавлен с датой производства {data[1]} и сроком хранения {expiration_days} дней.")
-    except (ValueError, IndexError):
-        bot.reply_to(message, "Ошибка в формате ввода. Убедитесь, что вы ввели данные в формате: Название, дд.мм.гггг, срок хранения (в днях).")
+        # Проверяем формат даты
+        production_date = datetime.strptime(production_date_str, '%d.%m.%Y').strftime('%Y-%m-%d')
+
+        # Получаем срок хранения из предопределенного словаря
+        if name in expiration_periods:
+            expiration_days = expiration_periods[name]
+            add_syrup(name, production_date, expiration_days)
+            bot.reply_to(message, f"Сироп '{name}' добавлен с датой производства {data[1]} и сроком хранения {expiration_days} дней.")
+        else:
+            bot.reply_to(message, "Срок хранения для этого сиропа не найден.")
+    except ValueError:
+        bot.reply_to(message, "Ошибка в формате даты. Пожалуйста, введите дату в формате дд.мм.гггг.")
+    except IndexError:
+        bot.reply_to(message, "Ошибка: убедитесь, что вы ввели оба поля (название и дату).")
+
 
 
 # Обработчик удаления сиропа по нажатию кнопки
