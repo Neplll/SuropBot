@@ -1,0 +1,126 @@
+import aiosqlite
+import asyncio
+from datetime import datetime, timedelta
+from telebot.async_telebot import AsyncTeleBot
+from telebot import types
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+API_TOKEN = '7138896417:AAFuVZBYn-LLxsJJmxjBCw47sng8OFw4ZFA'
+bot = AsyncTeleBot(API_TOKEN)
+
+# Предопределенные сроки хранения сиропов
+EXPIRATION_PERIODS = {
+    "Сахар": 16, "Карамель": 16, "Соленая карамель": 14, "Апельсин": 16, "Ваниль": 14,
+    "Домашний лимонад": 10, "Тоник": 16, "Фреш": 7, "КБ": 45, "Топинамбур": 30,
+    "Смородина": 16, "Ежевика": 16, "Кориандр": 8, "Тыква": 7, "Аламинол": 10
+}
+
+# Инициализация базы данных
+async def init_db():
+    async with aiosqlite.connect('syrups.db') as conn:
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS syrups (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                production_date DATE NOT NULL,
+                expiration_days INTEGER NOT NULL CHECK (expiration_days > 0)
+            )
+        ''')
+        await conn.commit()
+
+# Асинхронное добавление сиропа в базу данных
+async def add_syrup(name: str, production_date: str, expiration_days: int):
+    async with aiosqlite.connect('syrups.db') as conn:
+        await conn.execute('INSERT INTO syrups (name, production_date, expiration_days) VALUES (?, ?, ?)',
+                           (name, production_date, expiration_days))
+        await conn.commit()
+
+# Асинхронное получение всех сиропов из базы данных
+async def get_all_syrups():
+    async with aiosqlite.connect('syrups.db') as conn:
+        cursor = await conn.execute('SELECT id, name, production_date, expiration_days FROM syrups')
+        rows = await cursor.fetchall()
+        return rows
+
+# Асинхронная функция для уведомлений об истекших сиропах
+async def get_expired_syrups():
+    expired_syrups = []
+    async with aiosqlite.connect('syrups.db') as conn:
+        syrups = await conn.execute_fetchall('SELECT name, production_date, expiration_days FROM syrups')
+    today = datetime.now().date()
+    for name, production_date, expiration_days in syrups:
+        expiration_date = datetime.strptime(production_date, '%Y-%m-%d').date() + timedelta(days=expiration_days)
+        if expiration_date < today:
+            expired_syrups.append(name)
+    return expired_syrups
+
+# Создание кнопок основного меню
+def create_main_buttons():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(types.KeyboardButton("Добавить сироп"), types.KeyboardButton("Показать сиропы"))
+    keyboard.add(types.KeyboardButton("Удалить сироп"), types.KeyboardButton("Перемаркировать сироп"))
+    return keyboard
+
+# Обработчик команды /start
+@bot.message_handler(commands=['start'])
+async def send_welcome(message):
+    await bot.reply_to(message, "Привет! Я бот для управления сроками годности сиропов.", reply_markup=create_main_buttons())
+
+# Обработчик для добавления сиропа
+@bot.message_handler(func=lambda message: message.text == "Добавить сироп")
+async def request_add_syrup(message):
+    await bot.reply_to(message, "Введите данные сиропа в формате: Название, дд.мм.гггг.")
+
+# Асинхронный обработчик для отображения сиропов
+@bot.message_handler(func=lambda message: message.text == "Показать сиропы")
+async def list_syrups_handler(message):
+    syrups = await get_all_syrups()
+    if syrups:
+        grouped_syrups = {}
+        for _, name, production_date, expiration_days in syrups:
+            expiration_date = datetime.strptime(production_date, '%Y-%m-%d').date() + timedelta(days=expiration_days)
+            grouped_syrups.setdefault(name, []).append((production_date, expiration_date))
+
+        response = "Текущие сиропы:\n"
+        for name, dates in sorted(grouped_syrups.items()):
+            response += f"{name}:\n"
+            for idx, (production_date, expiration_date) in enumerate(sorted(dates, reverse=True), 1):
+                response += f"  {idx}. {production_date} - {expiration_date}\n"
+        await bot.reply_to(message, response)
+    else:
+        await bot.reply_to(message, "В базе данных нет сиропов.")
+
+# Обработчик для ввода сиропов
+@bot.message_handler(func=lambda message: True)
+async def handle_add_syrup_input(message):
+    try:
+        entries = message.text.strip().split("\n")
+        responses = []
+        for entry in entries:
+            name, date_str = map(str.strip, entry.split(","))
+            try:
+                production_date = datetime.strptime(date_str, '%d.%m.%Y').strftime('%Y-%m-%d')
+            except ValueError:
+                responses.append(f"Ошибка в формате даты для '{name}'. Используйте формат дд.мм.гггг.")
+                continue
+            expiration_days = EXPIRATION_PERIODS.get(name)
+            if expiration_days:
+                await add_syrup(name, production_date, expiration_days)
+                responses.append(f"Сироп '{name}' добавлен с датой {date_str} и сроком хранения {expiration_days} дней.")
+            else:
+                responses.append(f"Срок хранения для сиропа '{name}' не найден.")
+        await bot.reply_to(message, "\n".join(responses))
+    except Exception:
+        await bot.reply_to(message, "Произошла ошибка. Пожалуйста, проверьте введенные данные.")
+
+# Асинхронный планировщик для ежедневных уведомлений об истекших сиропах в 9 утра
+scheduler = AsyncIOScheduler()
+scheduler.add_job(lambda: bot.send_message(12345, "Истекшие сиропы:\n" + "\n".join(asyncio.run(get_expired_syrups()))), 'cron', hour=9)
+scheduler.start()
+
+# Запуск бота и инициализация базы данных
+async def main():
+    await init_db()
+    await bot.infinity_polling()
+
+asyncio.run(main())
